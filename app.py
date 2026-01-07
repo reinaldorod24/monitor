@@ -1,6 +1,7 @@
 import streamlit as st
 import subprocess
 import time
+import platform
 from datetime import datetime
 
 GRAVADORES = {
@@ -13,8 +14,15 @@ INTERVALO_ATUALIZACAO = 60  # segundos
 # --------------------------------------------- #
 
 def esta_online(ip):
+    sistema = platform.system().lower()
+
+    if sistema == "windows":
+        comando = ["ping", "-n", "1", ip]
+    else:
+        comando = ["ping", "-c", "1", ip]
+
     resposta = subprocess.run(
-        ["ping", "-n", "1", ip],  # Windows
+        comando,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
