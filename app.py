@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from streamlit_autorefresh import st_autorefresh
 
 # ==========================
 # CONFIGURAÇÃO DA PÁGINA
@@ -19,14 +20,17 @@ st.set_page_config(
 # ==========================
 ARQUIVO_EXCEL = "gravadores.xlsx"
 ABA_EXCEL = "gravadores"
-TIMEOUT_PADRAO = 3            # segundos
-MAX_WORKERS = 20              # seguro para Streamlit Cloud
-INTERVALO_AUTO = 600           # 10 minutos (em segundos)
+TIMEOUT_PADRAO = 3
+MAX_WORKERS = 20
+INTERVALO_AUTO = 600  # 10 minutos (segundos)
 
 # ==========================
-# AUTO-REFRESH (SEGURO)
+# AUTO-REFRESH (CORRETO)
 # ==========================
-st.autorefresh(interval=INTERVALO_AUTO * 1000, key="auto_refresh")
+st_autorefresh(
+    interval=INTERVALO_AUTO * 1000,
+    key="auto_refresh"
+)
 
 # ==========================
 # CARREGAMENTO DOS GRAVADORES
@@ -38,10 +42,7 @@ def carregar_gravadores():
         sheet_name=ABA_EXCEL,
         dtype={"ip": str, "nome": str}
     )
-
-    # Apenas gravadores ativos
-    df = df[df["ativo"] == 1]
-    return df
+    return df[df["ativo"] == 1]
 
 # ==========================
 # FUNÇÕES DE REDE
@@ -63,11 +64,7 @@ def medir_todos(df: pd.DataFrame):
 
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(df))) as executor:
         futures = {
-            executor.submit(
-                testar_conexao,
-                row["ip"],
-                int(row["porta"])
-            ): row
+            executor.submit(testar_conexao, row["ip"], int(row["porta"])): row
             for _, row in df.iterrows()
         }
 
@@ -107,7 +104,6 @@ def ordenar_df(df, ordenacao):
         df = df.sort_values(["ord", "Gravador"]).drop(columns="ord")
     else:
         df = df.sort_values("Gravador")
-
     return df
 
 def status_badge(status):
@@ -119,30 +115,20 @@ def status_badge(status):
 with st.sidebar:
     st.header("🔎 Filtros")
 
-    BUSCA = st.text_input(
-        "Buscar por nome ou IP",
-        placeholder="Ex: RJ-RJO ou 201.59"
-    )
-
-    STATUS_SEL = st.selectbox(
-        "Status",
-        ["Todos", "ONLINE", "OFFLINE"]
-    )
-
+    BUSCA = st.text_input("Buscar por nome ou IP")
+    STATUS_SEL = st.selectbox("Status", ["Todos", "ONLINE", "OFFLINE"])
     ORDENACAO = st.selectbox(
         "Ordenar por",
         ["Status (ONLINE primeiro)", "Nome (A→Z)"]
     )
 
     st.divider()
-
     VERIFICAR = st.button("🔄 Verificar agora")
 
 # ==========================
 # HEADER
 # ==========================
 st.title("📹 Monitoramento de Gravadores")
-st.caption(f"⏱ Última carga da página: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 st.caption("🔁 Atualização automática a cada 10 minutos")
 st.divider()
 
@@ -160,9 +146,6 @@ if "ultima_execucao" not in st.session_state:
 # ==========================
 df_gravadores = carregar_gravadores()
 
-# Executa se:
-# - botão for clicado
-# - OU auto-refresh disparar e já houve execução antes
 if VERIFICAR or st.session_state["ultima_execucao"] is not None:
     with st.spinner("🔍 Verificando gravadores..."):
         st.session_state["resultado"] = medir_todos(df_gravadores)
@@ -175,21 +158,19 @@ if df_resultado.empty:
     st.stop()
 
 # ==========================
-# FILTROS E ORDENAÇÃO
+# FILTROS
 # ==========================
 df_resultado = aplicar_filtros(
     df_resultado,
     BUSCA,
     STATUS_SEL if STATUS_SEL != "Todos" else ""
 )
-
 df_resultado = ordenar_df(df_resultado, ORDENACAO)
 
 # ==========================
 # RESUMO
 # ==========================
 col1, col2, col3 = st.columns(3)
-
 col1.metric("🟢 ONLINE", (df_resultado["Status"] == "ONLINE").sum())
 col2.metric("🔴 OFFLINE", (df_resultado["Status"] == "OFFLINE").sum())
 col3.metric("📊 TOTAL", len(df_resultado))
@@ -208,8 +189,4 @@ st.divider()
 df_show = df_resultado.copy()
 df_show["Status"] = df_show["Status"].apply(status_badge)
 
-st.dataframe(
-    df_show,
-    use_container_width=True,
-    hide_index=True
-)
+st.dataframe(df_show, use_container_width=True, hide_index=True)
