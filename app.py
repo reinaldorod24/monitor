@@ -4,7 +4,6 @@ import time
 from datetime import datetime
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from streamlit_autorefresh import st_autorefresh
 
 # ==========================
 # CONFIGURAÇÃO DA PÁGINA
@@ -25,12 +24,14 @@ MAX_WORKERS = 20
 INTERVALO_AUTO = 600  # 10 minutos (segundos)
 
 # ==========================
-# AUTO-REFRESH (CORRETO)
+# AUTO-REFRESH NATIVO STREAMLIT
 # ==========================
-st_autorefresh(
-    interval=INTERVALO_AUTO * 1000,
-    key="auto_refresh"
-)
+if "last_refresh" not in st.session_state:
+    st.session_state["last_refresh"] = time.time()
+
+if time.time() - st.session_state["last_refresh"] >= INTERVALO_AUTO:
+    st.session_state["last_refresh"] = time.time()
+    st.rerun()
 
 # ==========================
 # CARREGAMENTO DOS GRAVADORES
@@ -146,7 +147,7 @@ if "ultima_execucao" not in st.session_state:
 # ==========================
 df_gravadores = carregar_gravadores()
 
-if VERIFICAR or st.session_state["ultima_execucao"] is not None:
+if VERIFICAR or st.session_state["ultima_execucao"] is None:
     with st.spinner("🔍 Verificando gravadores..."):
         st.session_state["resultado"] = medir_todos(df_gravadores)
         st.session_state["ultima_execucao"] = datetime.now()
@@ -189,4 +190,8 @@ st.divider()
 df_show = df_resultado.copy()
 df_show["Status"] = df_show["Status"].apply(status_badge)
 
-st.dataframe(df_show, use_container_width=True, hide_index=True)
+st.dataframe(
+    df_show,
+    use_container_width=True,
+    hide_index=True
+)
