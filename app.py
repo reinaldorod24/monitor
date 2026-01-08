@@ -19,13 +19,19 @@ st.set_page_config(
 # ==========================
 ARQUIVO_EXCEL = "gravadores.xlsx"
 ABA_EXCEL = "gravadores"
-TIMEOUT_PADRAO = 3  # segundos (ideal para muitos gravadores)
-MAX_WORKERS = 80    # paralelismo seguro para 300+
+TIMEOUT_PADRAO = 3            # segundos
+MAX_WORKERS = 20              # seguro para Streamlit Cloud
+INTERVALO_AUTO = 600           # 10 minutos (em segundos)
+
+# ==========================
+# AUTO-REFRESH (SEGURO)
+# ==========================
+st.autorefresh(interval=INTERVALO_AUTO * 1000, key="auto_refresh")
 
 # ==========================
 # CARREGAMENTO DOS GRAVADORES
 # ==========================
-@st.cache_data
+@st.cache_data(ttl=300)
 def carregar_gravadores():
     df = pd.read_excel(
         ARQUIVO_EXCEL,
@@ -33,9 +39,8 @@ def carregar_gravadores():
         dtype={"ip": str, "nome": str}
     )
 
-    # Apenas ativos
+    # Apenas gravadores ativos
     df = df[df["ativo"] == 1]
-
     return df
 
 # ==========================
@@ -50,10 +55,13 @@ def testar_conexao(ip: str, porta: int, timeout: float = TIMEOUT_PADRAO):
     except Exception:
         return False, None
 
-def medir_todos(df):
+def medir_todos(df: pd.DataFrame):
     resultados = []
 
-    with ThreadPoolExecutor(max_workers=min(64, len(df))) as executor:
+    if df.empty:
+        return pd.DataFrame()
+
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(df))) as executor:
         futures = {
             executor.submit(
                 testar_conexao,
@@ -126,23 +134,49 @@ with st.sidebar:
         ["Status (ONLINE primeiro)", "Nome (A→Z)"]
     )
 
-    if st.button("🔄 Verificar agora"):
-        st.cache_data.clear()
-        st.rerun()
+    st.divider()
+
+    VERIFICAR = st.button("🔄 Verificar agora")
 
 # ==========================
 # HEADER
 # ==========================
 st.title("📹 Monitoramento de Gravadores")
-st.caption(f"Última verificação: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+st.caption(f"⏱ Última carga da página: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+st.caption("🔁 Atualização automática a cada 10 minutos")
 st.divider()
+
+# ==========================
+# SESSION STATE
+# ==========================
+if "resultado" not in st.session_state:
+    st.session_state["resultado"] = pd.DataFrame()
+
+if "ultima_execucao" not in st.session_state:
+    st.session_state["ultima_execucao"] = None
 
 # ==========================
 # PROCESSAMENTO
 # ==========================
 df_gravadores = carregar_gravadores()
-df_resultado = medir_todos(df_gravadores)
 
+# Executa se:
+# - botão for clicado
+# - OU auto-refresh disparar e já houve execução antes
+if VERIFICAR or st.session_state["ultima_execucao"] is not None:
+    with st.spinner("🔍 Verificando gravadores..."):
+        st.session_state["resultado"] = medir_todos(df_gravadores)
+        st.session_state["ultima_execucao"] = datetime.now()
+
+df_resultado = st.session_state["resultado"]
+
+if df_resultado.empty:
+    st.info("👉 Clique em **Verificar agora** para iniciar o monitoramento.")
+    st.stop()
+
+# ==========================
+# FILTROS E ORDENAÇÃO
+# ==========================
 df_resultado = aplicar_filtros(
     df_resultado,
     BUSCA,
@@ -156,9 +190,15 @@ df_resultado = ordenar_df(df_resultado, ORDENACAO)
 # ==========================
 col1, col2, col3 = st.columns(3)
 
-col1.metric("ONLINE", (df_resultado["Status"] == "ONLINE").sum())
-col2.metric("OFFLINE", (df_resultado["Status"] == "OFFLINE").sum())
-col3.metric("TOTAL", len(df_resultado))
+col1.metric("🟢 ONLINE", (df_resultado["Status"] == "ONLINE").sum())
+col2.metric("🔴 OFFLINE", (df_resultado["Status"] == "OFFLINE").sum())
+col3.metric("📊 TOTAL", len(df_resultado))
+
+if st.session_state["ultima_execucao"]:
+    st.caption(
+        f"Última verificação: "
+        f"{st.session_state['ultima_execucao'].strftime('%d/%m/%Y %H:%M:%S')}"
+    )
 
 st.divider()
 
