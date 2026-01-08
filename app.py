@@ -21,22 +21,11 @@ ARQUIVO_EXCEL = "gravadores.xlsx"
 ABA_EXCEL = "gravadores"
 TIMEOUT_PADRAO = 3
 MAX_WORKERS = 20
-INTERVALO_AUTO = 600  # 10 minutos (segundos)
-
-# ==========================
-# AUTO-REFRESH NATIVO STREAMLIT
-# ==========================
-if "last_refresh" not in st.session_state:
-    st.session_state["last_refresh"] = time.time()
-
-if time.time() - st.session_state["last_refresh"] >= INTERVALO_AUTO:
-    st.session_state["last_refresh"] = time.time()
-    st.rerun()
 
 # ==========================
 # CARREGAMENTO DOS GRAVADORES
 # ==========================
-@st.cache_data(ttl=300)
+@st.cache_data
 def carregar_gravadores():
     df = pd.read_excel(
         ARQUIVO_EXCEL,
@@ -124,13 +113,13 @@ with st.sidebar:
     )
 
     st.divider()
-    VERIFICAR = st.button("🔄 Verificar agora")
+    EXECUTAR = st.button("▶️ Verificar gravadores")
 
 # ==========================
 # HEADER
 # ==========================
 st.title("📹 Monitoramento de Gravadores")
-st.caption("🔁 Atualização automática a cada 10 minutos")
+st.caption("Clique no botão para iniciar a verificação")
 st.divider()
 
 # ==========================
@@ -143,19 +132,22 @@ if "ultima_execucao" not in st.session_state:
     st.session_state["ultima_execucao"] = None
 
 # ==========================
-# PROCESSAMENTO
+# EXECUÇÃO MANUAL
 # ==========================
-df_gravadores = carregar_gravadores()
+if EXECUTAR:
+    df_gravadores = carregar_gravadores()
 
-if VERIFICAR or st.session_state["ultima_execucao"] is None:
     with st.spinner("🔍 Verificando gravadores..."):
         st.session_state["resultado"] = medir_todos(df_gravadores)
         st.session_state["ultima_execucao"] = datetime.now()
 
+# ==========================
+# EXIBIÇÃO
+# ==========================
 df_resultado = st.session_state["resultado"]
 
 if df_resultado.empty:
-    st.info("👉 Clique em **Verificar agora** para iniciar o monitoramento.")
+    st.info("👉 Clique em **Verificar gravadores** para iniciar.")
     st.stop()
 
 # ==========================
