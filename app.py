@@ -1,9 +1,9 @@
 import streamlit as st
 import socket
-import time
 from datetime import datetime
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from streamlit_autorefresh import st_autorefresh
 
 # ==========================
 # CONFIGURAÇÃO DA PÁGINA
@@ -19,171 +19,109 @@ st.set_page_config(
 # ==========================
 ARQUIVO_EXCEL = "gravadores.xlsx"
 ABA_EXCEL = "gravadores"
-TIMEOUT_PADRAO = 3
-MAX_WORKERS = 20
+TIMEOUT = 3           # timeout de conexão em segundos
+MAX_WORKERS = 30      # threads simultâneas
+AUTO_REFRESH_MIN = 5  # atualizar automaticamente a cada 5 minutos
 
 # ==========================
-# CARREGAMENTO DOS GRAVADORES
+# AUTO-REFRESH LEVE
+# ==========================
+st_autorefresh(interval=AUTO_REFRESH_MIN * 60 * 1000, key="auto_refresh")
+
+# ==========================
+# FUNÇÕES
 # ==========================
 @st.cache_data
 def carregar_gravadores():
     df = pd.read_excel(
         ARQUIVO_EXCEL,
         sheet_name=ABA_EXCEL,
-        dtype={"ip": str, "nome": str}
+        dtype={"ip": str, "nome": str, "porta": str, "ativo": int}
     )
-    return df[df["ativo"] == 1]
+    return df[df["ativo"] == 1].reset_index(drop=True)
 
-# ==========================
-# FUNÇÕES DE REDE
-# ==========================
-def testar_conexao(ip: str, porta: int, timeout: float = TIMEOUT_PADRAO):
-    inicio = time.perf_counter()
+def testar_conexao(gravador):
+    ip = gravador["ip"]
+    porta = gravador["porta"]
+    nome = gravador["nome"]
     try:
-        with socket.create_connection((ip, porta), timeout=timeout):
-            dur = (time.perf_counter() - inicio) * 1000
-            return True, round(dur, 1)
+        with socket.create_connection((ip, int(porta)), timeout=TIMEOUT):
+            return {"Gravador": nome, "IP": ip, "Porta": porta, "Status": "ONLINE", "Horário": datetime.now().strftime("%H:%M:%S")}
     except Exception:
-        return False, None
-
-def medir_todos(df: pd.DataFrame):
-    resultados = []
-
-    if df.empty:
-        return pd.DataFrame()
-
-    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(df))) as executor:
-        futures = {
-            executor.submit(testar_conexao, row["ip"], int(row["porta"])): row
-            for _, row in df.iterrows()
-        }
-
-        for future in as_completed(futures):
-            row = futures[future]
-            online, ms = future.result()
-
-            resultados.append({
-                "Gravador": row["nome"],
-                "IP": row["ip"],
-                "Porta": row["porta"],
-                "Status": "ONLINE" if online else "OFFLINE",
-                "Tempo (ms)": ms if ms else ""
-            })
-
-    return pd.DataFrame(resultados)
-
-# ==========================
-# FILTROS E ORDENAÇÃO
-# ==========================
-def aplicar_filtros(df, busca, status):
-    if busca:
-        busca = busca.lower().strip()
-        df = df[
-            df["Gravador"].str.lower().str.contains(busca) |
-            df["IP"].str.lower().str.contains(busca)
-        ]
-
-    if status in ("ONLINE", "OFFLINE"):
-        df = df[df["Status"] == status]
-
-    return df
-
-def ordenar_df(df, ordenacao):
-    if ordenacao == "Status (ONLINE primeiro)":
-        df["ord"] = df["Status"].map({"ONLINE": 0, "OFFLINE": 1})
-        df = df.sort_values(["ord", "Gravador"]).drop(columns="ord")
-    else:
-        df = df.sort_values("Gravador")
-    return df
+        return {"Gravador": nome, "IP": ip, "Porta": porta, "Status": "OFFLINE", "Horário": datetime.now().strftime("%H:%M:%S")}
 
 def status_badge(status):
     return "🟢 ONLINE" if status == "ONLINE" else "🔴 OFFLINE"
 
 # ==========================
-# SIDEBAR
+# CARREGAR GRAVADORES
 # ==========================
-with st.sidebar:
-    st.header("🔎 Filtros")
-
-    BUSCA = st.text_input("Buscar por nome ou IP")
-    STATUS_SEL = st.selectbox("Status", ["Todos", "ONLINE", "OFFLINE"])
-    ORDENACAO = st.selectbox(
-        "Ordenar por",
-        ["Status (ONLINE primeiro)", "Nome (A→Z)"]
-    )
-
-    st.divider()
-    EXECUTAR = st.button("▶️ Verificar gravadores")
+df_gravadores = carregar_gravadores()
 
 # ==========================
-# HEADER
+# SESSION STATE PARA RESULTADOS
 # ==========================
-st.title("📹 Monitoramento de Gravadores")
-st.caption("Clique no botão para iniciar a verificação")
-st.divider()
+if "resultados" not in st.session_state:
+    st.session_state.resultados = []
+
+# Placeholder para tabela
+placeholder = st.empty()
 
 # ==========================
-# SESSION STATE
+# SIDEBAR - FILTROS
 # ==========================
-if "resultado" not in st.session_state:
-    st.session_state["resultado"] = pd.DataFrame()
-
-if "ultima_execucao" not in st.session_state:
-    st.session_state["ultima_execucao"] = None
+st.sidebar.header("🔎 Filtros")
+filtro_status = st.sidebar.selectbox("Status", ["Todos", "ONLINE", "OFFLINE"])
+filtro_texto = st.sidebar.text_input("Buscar por nome ou IP", "")
 
 # ==========================
-# EXECUÇÃO MANUAL
+# TÍTULO
 # ==========================
-if EXECUTAR:
-    df_gravadores = carregar_gravadores()
-
-    with st.spinner("🔍 Verificando gravadores..."):
-        st.session_state["resultado"] = medir_todos(df_gravadores)
-        st.session_state["ultima_execucao"] = datetime.now()
+st.title("📹 Monitoramento de Gravadores Automático")
+st.caption(f"Atualização automática a cada {AUTO_REFRESH_MIN} minutos. Timeout de {TIMEOUT}s por gravador.")
 
 # ==========================
-# EXIBIÇÃO
+# EXECUÇÃO DE TODOS OS GRAVADORES
 # ==========================
-df_resultado = st.session_state["resultado"]
+if not st.session_state.resultados:
+    st.info("Iniciando verificação dos gravadores...")
 
-if df_resultado.empty:
-    st.info("👉 Clique em **Verificar gravadores** para iniciar.")
-    st.stop()
+    resultados = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(testar_conexao, row): row for _, row in df_gravadores.iterrows()}
+        for future in as_completed(futures):
+            resultados.append(future.result())
 
-# ==========================
-# FILTROS
-# ==========================
-df_resultado = aplicar_filtros(
-    df_resultado,
-    BUSCA,
-    STATUS_SEL if STATUS_SEL != "Todos" else ""
-)
-df_resultado = ordenar_df(df_resultado, ORDENACAO)
+    st.session_state.resultados = resultados
+    st.success("✅ Todos os gravadores foram testados.")
 
 # ==========================
-# RESUMO
+# PREPARAR TABELA E DASHBOARD
+# ==========================
+df_res = pd.DataFrame(st.session_state.resultados)
+
+# ==========================
+# DASHBOARD - SOMENTE DEPOIS DE TODA VERIFICAÇÃO
 # ==========================
 col1, col2, col3 = st.columns(3)
-col1.metric("🟢 ONLINE", (df_resultado["Status"] == "ONLINE").sum())
-col2.metric("🔴 OFFLINE", (df_resultado["Status"] == "OFFLINE").sum())
-col3.metric("📊 TOTAL", len(df_resultado))
-
-if st.session_state["ultima_execucao"]:
-    st.caption(
-        f"Última verificação: "
-        f"{st.session_state['ultima_execucao'].strftime('%d/%m/%Y %H:%M:%S')}"
-    )
-
-st.divider()
+col1.metric("📊 Total Gravadores", len(df_gravadores))
+col2.metric("🟢 Online", (df_res["Status"] == "ONLINE").sum())
+col3.metric("🔴 Offline", (df_res["Status"] == "OFFLINE").sum())
 
 # ==========================
-# TABELA
+# APLICAR FILTROS
 # ==========================
-df_show = df_resultado.copy()
-df_show["Status"] = df_show["Status"].apply(status_badge)
+df_filtro = df_res.copy()
+if filtro_status != "Todos":
+    df_filtro = df_filtro[df_filtro["Status"] == filtro_status]
+if filtro_texto:
+    texto = filtro_texto.lower()
+    df_filtro = df_filtro[
+        df_filtro["Gravador"].str.lower().str.contains(texto) |
+        df_filtro["IP"].str.lower().str.contains(texto)
+    ]
 
-st.dataframe(
-    df_show,
-    use_container_width=True,
-    hide_index=True
-)
+# ==========================
+# MOSTRAR TABELA FINAL
+# ==========================
+placeholder.dataframe(df_filtro, width="stretch", hide_index=True)
