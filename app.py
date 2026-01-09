@@ -1,100 +1,164 @@
 import socket
-import time
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 
 # ==========================
-# CONFIG DA PÁGINA
+# CONFIGURAÇÃO
 # ==========================
-st.set_page_config(page_title="Monitor de Gravadores", page_icon="📹", layout="wide")
+st.set_page_config(page_title="Monitor Básico de Gravadores", page_icon="📹", layout="wide")
 
-
-# ==========================
-# AJUSTES PRINCIPAIS
-# ==========================
-AUTO_REFRESH_MIN = 5  # atualizar automaticamente a cada 5 minutos
-
-# Fase A: varredura rápida
-PHASE_A_TIMEOUT = 1.5
-PHASE_A_WORKERS_START = 50
-PHASE_A_WORKERS_MIN = 20
-PHASE_A_WORKERS_MAX = 80
-
-# Fase B: confirmação só dos OFFLINE da fase A
-PHASE_B_TIMEOUT = 3.0
-PHASE_B_WORKERS_START = 30
-PHASE_B_WORKERS_MIN = 10
-PHASE_B_WORKERS_MAX = 50
-
-# Adaptação de concorrência (baseado em taxa de erros/timeouts)
-ERROR_RATE_UPPER = 0.12  # acima disso, reduz workers
-ERROR_RATE_LOWER = 0.03  # abaixo disso, pode aumentar workers
-WORKERS_STEP = 10        # quanto sobe/desce por rodada
+TIMEOUT = 2.5                # timeout TCP (segundos)
+MAX_SIMULTANEO = 30          # 30 por vez (threads)
+AUTO_INTERVAL_MS = 2 * 60 * 1000  # 2 minutos
 
 
 # ==========================
-# LISTA FIXA (COLE AQUI)
+# LISTA DE GRAVADORES (cole seus 120 aqui)
 # ==========================
-GRAVADORES = [  {"nome": "RJ-RJO-MAR", "ip": "201.59.252.38", "porta": 37777, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
-    {"nome": "RJ-JDAR-JDAR", "ip": "200.222.243.62", "porta": 50000, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
-    
+GRAVADORES = [
+    {"nome": "MG-VENO-VNO", "ip": "200.165.57.186", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-VITE-VITE", "ip": "200.202.197.102", "porta": 50000, "site": "SAO JOAO DE MERITI", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-RJO-BGU", "ip": "200.222.62.110", "porta": 50000, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-NLP-NLP", "ip": "187.12.208.162", "porta": 50000, "site": "NILOPOLIS", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-BHE-FLO", "ip": "200.222.56.22", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "ES-JAMC-JAMC", "ip": "200.216.113.2", "porta": 50000, "site": "CARIACICA", "cidade": "ES", "ativo": True},
+    {"nome": "RJ-VRD-RETK", "ip": "200.222.73.242", "porta": 37777, "site": "VOLTA REDONDA", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-SLA-SLA", "ip": "200.165.58.50", "porta": 50000, "site": "SETE LAGOAS", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-RJO-RDB", "ip": "189.80.91.190", "porta": 50000, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-BERO-BERO", "ip": "200.222.73.102", "porta": 50000, "site": "BELFORD ROXO", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-SGO-PDAL", "ip": "200.151.9.46", "porta": 37777, "site": "SAO GONCALO", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-BET-BET", "ip": "200.97.90.50", "porta": 37777, "site": "BETIM", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-GLO", "ip": "201.18.75.130", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-QUEA-QUEA", "ip": "200.202.197.74", "porta": 37777, "site": "QUEIMADOS", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-JFA-NEA", "ip": "200.216.241.26", "porta": 37777, "site": "JUIZ DE FORA", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-SMI-SMI", "ip": "200.202.229.86", "porta": 37777, "site": "SAO JOAO DE MERITI", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-UBA-SCW", "ip": "200.165.151.16", "porta": 37777, "site": "UBA", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-CRRS-CRRS", "ip": "200.149.2.118", "porta": 37777, "site": "PETROPOLIS", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-UNAR-UNAR", "ip": "189.80.240.2", "porta": 37777, "site": "CABO FRIO", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-RJO-CVI", "ip": "201.32.212.150", "porta": 50000, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-CEM-PET", "ip": "200.97.10.218", "porta": 50000, "site": "CONTAGEM", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-BEL", "ip": "200.199.8.224", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-PCS-FSA", "ip": "189.80.142.80", "porta": 37777, "site": "POCOS DE CALDAS", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-CPS-CPS", "ip": "200.223.200.90", "porta": 37777, "site": "CAMPOS DOS GOYTACAZES", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-TRL-VZA", "ip": "201.32.212.150", "porta": 37777, "site": "TERESOPOLIS", "cidade": "RJ", "ativo": True},
+     {"nome": "MG-NLA-NLA", "ip": "187.76.241.210", "porta": 50000, "site": "NOVA LIMA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-VPN-VPN", "ip": "201.59.11.248", "porta": 37777, "site": "VESPASIANO", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BET-FDI", "ip": "200.216.252.8", "porta": 50000, "site": "BETIM", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BET-IRU", "ip": "200.202.243.240", "porta": 37777, "site": "BETIM", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-INC", "ip": "200.222.50.42", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BMO-BMO", "ip": "187.76.192.226", "porta": 50000, "site": "BRUMADINHO", "cidade": "MG", "ativo": True},
+    {"nome": "MG-IIE-CAK", "ip": "187.76.216.194", "porta": 50000, "site": "IBIRITE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-IRP-IRP", "ip": "187.76.216.82", "porta": 50000, "site": "IGARAPE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-RNS-RNS", "ip": "200.149.101.176", "porta": 37777, "site": "RIBEIRAO DAS NEVES", "cidade": "MG", "ativo": True},
+    {"nome": "MG-SRZE-SRZE", "ip": "200.97.16.2", "porta": 37777, "site": "SARZEDO", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-RJO-SLC", "ip": "200.202.197.86", "porta": 37777, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
+    {"nome": "DF-STMK-ETMS", "ip": "189.74.138.5", "porta": 50000, "site": "BRASILIA", "cidade": "DF", "ativo": True},
+    {"nome": "DF-SOBD-ETSB", "ip": "201.41.66.78", "porta": 50000, "site": "BRASILIA", "cidade": "DF", "ativo": True},
+    {"nome": "GO-GNA-MUT", "ip": "177.201.98.30", "porta": 50000, "site": "GOIANIA", "cidade": "GO", "ativo": True},
+    {"nome": "RJ-IGI-IGI", "ip": "200.222.38.14", "porta": 50000, "site": "ITAGUAI", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-PNHE-PNHE", "ip": "200.164.236.106", "porta": 50000, "site": "PINHEIRAL", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-BAMC-BAMC", "ip": "200.222.142.250", "porta": 50000, "site": "MARICA", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-PPUC-PPUC", "ip": "200.165.139.102", "porta": 37777, "site": "CACHOEIRAS DE MACACU", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-RJO-PNB", "ip": "189.80.175.46", "porta": 50000, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-SLU-SLU", "ip": "200.165.79.10", "porta": 50000, "site": "SANTA LUZIA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-IBA-IBA", "ip": "200.222.100.154", "porta": 50000, "site": "ITABIRA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-IIG-IIG", "ip": "200.216.246.102", "porta": 50000, "site": "IPATINGA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-CLO", "ip": "200.195.46.50", "porta": 50000, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-DBO", "ip": "200.165.57.192", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-SAV", "ip": "200.149.128.8", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-CPO-CPO", "ip": "200.216.241.234", "porta": 50000, "site": "CAMPO BELO", "cidade": "MG", "ativo": True},
+    {"nome": "MG-CUG-CUG", "ip": "200.97.9.174", "porta": 50000, "site": "CORDISBURGO", "cidade": "MG", "ativo": True},
+    {"nome": "MG-FMA-FMA", "ip": "200.149.223.114", "porta": 50000, "site": "FORMIGA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-VENO-LET", "ip": "200.165.57.250", "porta": 50000, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-VENO-MHE", "ip": "200.151.82.130", "porta": 50000, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-INOA-INOA", "ip": "200.149.213.130", "porta": 50000, "site": "MARICA", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-IOY-IOY", "ip": "189.80.95.46", "porta": 50000, "site": "ITABORAI", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-RBT-RBT", "ip": "189.80.74.38", "porta": 50000, "site": "RIO BONITO", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-SALX-SALX", "ip": "200.149.2.142", "porta": 37777, "site": "MAGE", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-VAS-VAS", "ip": "201.18.31.130", "porta": 37777, "site": "VASSOURAS", "cidade": "RJ", "ativo": True},
+    {"nome": "GO-ACG-CDL", "ip": "169.254.245.206", "porta": 50000, "site": "APARECIDA DE GOIANIA", "cidade": "GO", "ativo": True},
+    {"nome": "GO-PIR-PIR", "ip": "169.254.245.206", "porta": 50000, "site": "PIRES DO RIO", "cidade": "GO", "ativo": True},
+    {"nome": "DF-PLAA-ETPL", "ip": "177.202.157.18", "porta": 50000, "site": "BRASILIA", "cidade": "DF", "ativo": True},
+    {"nome": "DF-GURX-ETGR", "ip": "179.255.254.206", "porta": 37777, "site": "BRASILIA", "cidade": "DF", "ativo": True},
+    {"nome": "ES-JAIP-JAIP", "ip": "189.80.25.90", "porta": 50000, "site": "SERRA", "cidade": "ES", "ativo": True},
+    {"nome": "DF-SAMB-ETSN", "ip": "187.52.102.2", "porta": 50000, "site": "BRASILIA", "cidade": "DF", "ativo": True},
+    {"nome": "ES-JAMC-SFCO", "ip": "200.199.87.142", "porta": 50000, "site": "CARIACICA", "cidade": "ES", "ativo": True},
+    {"nome": "ES-CCA-CCA", "ip": "200.165.57.154", "porta": 50000, "site": "CARIACICA", "cidade": "ES", "ativo": True},
+    {"nome": "ES-VVA-NMEX", "ip": "200.216.111.82", "porta": 50000, "site": "VILA VELHA", "cidade": "ES", "ativo": True},
+    {"nome": "MG-BHE-STE", "ip": "187.76.239.98", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-BCI", "ip": "200.216.236.58", "porta": 50000, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-ARI-ARI", "ip": "200.195.83.64", "porta": 37777, "site": "ARAGUARI", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-JACC-JACC", "ip": "200.222.90.218", "porta": 50000, "site": "ANGRA DOS REIS", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-LPD-LPD", "ip": "187.76.219.72", "porta": 37777, "site": "LEOPOLDINA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-SCR", "ip": "201.32.16.8", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-SOBI-SOBI", "ip": "187.76.239.176", "porta": 37777, "site": "SANTA LUZIA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-SRS-SRS", "ip": "189.80.159.24", "porta": 37777, "site": "SANTA RITA DO SAPUCAI", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BET-NIT", "ip": "189.80.139.24", "porta": 37777, "site": "BETIM", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-CAZ", "ip": "201.59.6.216", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-ODA", "ip": "200.216.240.240", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-SMW", "ip": "200.216.163.186", "porta": 50000, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-CEM-IND", "ip": "201.18.22.217", "porta": 37777, "site": "CONTAGEM", "cidade": "MG", "ativo": True},
+    {"nome": "MG-GVS-SLI", "ip": "200.202.243.233", "porta": 37777, "site": "GOVERNADOR VALADARES", "cidade": "MG", "ativo": True},
+    {"nome": "MG-IAN-TAV", "ip": "187.76.239.32", "porta": 37777, "site": "ITAUNA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-IIE-IIE", "ip": "187.76.205.248", "porta": 37777, "site": "IBIRITE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-PSA-JAU", "ip": "200.223.164.248", "porta": 37777, "site": "POUSO ALEGRE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-SND-QFE", "ip": "189.80.149.80", "porta": 37777, "site": "SANTOS DUMONT", "cidade": "MG", "ativo": True},
+    {"nome": "RJ-GUPM-GUPM", "ip": "200.149.96.254", "porta": 50000, "site": "GUAPIMIRIM", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-JPRI-JPRI", "ip": "200.222.107.250", "porta": 50000, "site": "JAPERI", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-JPRI-PT64", "ip": "201.18.85.210", "porta": 50000, "site": "JAPERI", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-PAT-PAT", "ip": "201.32.212.158", "porta": 50000, "site": "PARATY", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-RJO-JCP", "ip": "201.18.68.190", "porta": 50000, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
+    {"nome": "RJ-RJO-VGD", "ip": "200.164.148.122", "porta": 50000, "site": "RIO DE JANEIRO", "cidade": "RJ", "ativo": True},
+    {"nome": "MG-JUST-SLW", "ip": "187.76.219.232", "porta": 37777, "site": "RIBEIRAO DAS NEVES", "cidade": "MG", "ativo": True},
+    {"nome": "MG-SBA-SBA", "ip": "200.97.11.232", "porta": 37777, "site": "SABARA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-IND", "ip": "201.18.22.218", "porta": 50000, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-SAR", "ip": "201.18.117.16", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-TUP", "ip": "200.202.220.96", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-BHE-VJA", "ip": "200.165.57.176", "porta": 37777, "site": "BELO HORIZONTE", "cidade": "MG", "ativo": True},
+    {"nome": "MG-LGT-SDU", "ip": "201.18.139.64", "porta": 37777, "site": "LAGOA SANTA", "cidade": "MG", "ativo": True},
+    {"nome": "MG-MRPS-MRPS", "ip": "187.125.84.192", "porta": 37777, "site": "MARIO CAMPOS", "cidade": "MG", "ativo": True},
+    {"nome": "MG-CEM-CON", "ip": "200.165.142.40", "porta": 37777, "site": "CONTAGEM", "cidade": "MG", "ativo": True},
+    {"nome": "MG-DVL-CTDI", "ip": "187.76.11.72", "porta": 37777, "site": "DIVINOPOLIS", "cidade": "MG", "ativo": True},
+    {"nome": "MG-MCL-CEN", "ip": "200.165.72.32", "porta": 37777, "site": "MONTES CLAROS", "cidade": "MG", "ativo": True},
+    {"nome": "MG-JFA-RBR", "ip": "187.76.12.96", "porta": 37777, "site": "JUIZ DE FORA", "cidade": "MG", "ativo": True},
+    {"nome": "SP-BRE-PTA", "ip": "200.141.233.144", "porta": 37777, "site": "BARUERI", "cidade": "SP", "ativo": True},
+    {"nome": "SP-MCZ-MCZ", "ip": "201.32.38.184", "porta": 37777, "site": "MOGI DAS CRUZES", "cidade": "SP", "ativo": True},
+    {"nome": "SP-ARQ-AAU", "ip": "201.18.27.168", "porta": 37777, "site": "ARARAQUARA", "cidade": "SP", "ativo": True},
+    {"nome": "SP-LIS-LLU", "ip": "201.59.255.8", "porta": 37777, "site": "LINS", "cidade": "SP", "ativo": True},
+    {"nome": "SP-SCL-JSP1", "ip": "200.195.56.80", "porta": 37777, "site": "SAO CARLOS", "cidade": "SP", "ativo": True},
+    {"nome": "SP-JAU-JJU", "ip": "201.18.25.248", "porta": 37777, "site": "JAU", "cidade": "SP", "ativo": True},
+    {"nome": "SP-ORN-PAF", "ip": "201.18.25.0", "porta": 37777, "site": "OURINHOS", "cidade": "SP", "ativo": True},
+    # ... cole os demais até 120
 ]
 
 
 # ==========================
-# TELEMETRIA
+# FUNÇÕES
 # ==========================
-@dataclass
-class RoundStats:
-    total: int
-    online: int
-    offline: int
-    errors: int
-    avg_ms: int
-    p95_ms: int
-    phase: str
-    timeout: float
-    workers_used: int
-
-
-# ==========================
-# TCP CHECK (stdlib)
-# ==========================
-def testar_conexao_tcp(ip: str, porta: int, timeout: float) -> bool:
+def tcp_check(ip: str, port: int, timeout: float) -> bool:
     try:
-        with socket.create_connection((ip, porta), timeout=timeout):
+        with socket.create_connection((ip, int(port)), timeout=timeout):
             return True
     except OSError:
         return False
 
 
-def _verificar_item(item: dict, timeout: float) -> dict:
-    nome = item.get("nome", "")
-    ip = item.get("ip", "")
-    porta = int(item.get("porta", 0))
-    site = item.get("site", "")
-    cidade = item.get("cidade", "")
+def verificar_um(item: dict) -> dict:
+    nome = str(item.get("nome", "")).strip()
+    ip = str(item.get("ip", "")).strip()
+    porta = int(item.get("porta", 0) or 0)
+    site = str(item.get("site", "")).strip()
+    cidade = str(item.get("cidade", "")).strip()
     ativo = bool(item.get("ativo", True))
 
-    inicio = time.perf_counter()
     ok = False
-    error = False
-
-    if ativo and ip and porta:
-        try:
-            ok = testar_conexao_tcp(ip, porta, timeout=timeout)
-        except OSError:
-            ok = False
-            error = True
-    else:
-        ok = False
-
-    dur_ms = int((time.perf_counter() - inicio) * 1000)
+    if ativo and ip and porta > 0:
+        ok = tcp_check(ip, porta, TIMEOUT)
 
     return {
         "Nome": nome,
@@ -102,296 +166,134 @@ def _verificar_item(item: dict, timeout: float) -> dict:
         "Porta": porta,
         "Site": site,
         "Cidade": cidade,
-        "Ativo": ativo,
         "Status": "ONLINE" if ok else "OFFLINE",
-        "Latência (ms)": dur_ms if ok else None,
-        "_dur_ms": dur_ms,
-        "_error": bool(error) if not ok else False,
-        "Última verificação": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
-def _rodar_fase(
-    gravadores: list[dict],
-    timeout: float,
-    workers: int,
-    phase_name: str,
-) -> tuple[pd.DataFrame, RoundStats]:
+def verificar_todos(gravadores: list[dict]) -> pd.DataFrame:
     total = len(gravadores)
     if total == 0:
-        df_empty = pd.DataFrame(
-            columns=[
-                "Nome", "IP", "Porta", "Site", "Cidade", "Ativo",
-                "Status", "Latência (ms)", "Última verificação"
-            ]
-        )
-        stats = RoundStats(0, 0, 0, 0, 0, 0, phase_name, timeout, workers)
-        return df_empty, stats
+        return pd.DataFrame(columns=["Nome", "IP", "Porta", "Site", "Cidade", "Status"])
 
-    prog = st.progress(0, text=f"{phase_name}: verificando... (0/{total})")
+    prog = st.progress(0, text=f"Verificando... (0/{total})")
     info = st.empty()
 
     results: list[dict] = []
-    workers_used = max(1, min(int(workers), total))
+    workers = min(MAX_SIMULTANEO, total)
 
     done = 0
-    with ThreadPoolExecutor(max_workers=workers_used) as ex:
-        futures = [ex.submit(_verificar_item, g, timeout) for g in gravadores]
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(verificar_um, g) for g in gravadores]
         for fut in as_completed(futures):
             results.append(fut.result())
             done += 1
-            prog.progress(done / total, text=f"{phase_name}: verificando... ({done}/{total})")
+            prog.progress(done / total, text=f"Verificando... ({done}/{total})")
             if done % 10 == 0 or done == total:
-                info.write(f"{phase_name}: {done}/{total} concluídos")
+                info.write(f"Concluídos: {done}/{total}")
 
     prog.empty()
     info.empty()
 
     df = pd.DataFrame(results)
-
-    online = int((df["Status"] == "ONLINE").sum()) if not df.empty else 0
-    offline = total - online
-    errors = int(df["_error"].sum()) if not df.empty else 0
-
-    durs = df["_dur_ms"].tolist() if not df.empty else []
-    avg_ms = int(sum(durs) / len(durs)) if durs else 0
-    if durs:
-        durs_sorted = sorted(durs)
-        p95 = durs_sorted[min(len(durs_sorted) - 1, int(len(durs_sorted) * 0.95))]
-    else:
-        p95 = 0
-
-    stats = RoundStats(
-        total=total,
-        online=online,
-        offline=offline,
-        errors=errors,
-        avg_ms=avg_ms,
-        p95_ms=int(p95),
-        phase=phase_name,
-        timeout=timeout,
-        workers_used=workers_used,
-    )
-    return df, stats
-
-
-def _adapt_workers(current: int, error_rate: float, wmin: int, wmax: int) -> int:
-    nxt = int(current)
-    if error_rate > ERROR_RATE_UPPER:
-        nxt = max(wmin, nxt - WORKERS_STEP)
-    elif error_rate < ERROR_RATE_LOWER:
-        nxt = min(wmax, nxt + WORKERS_STEP)
-    return nxt
-
-
-def verificar_todos_duas_fases(gravadores: list[dict]) -> tuple[pd.DataFrame, dict]:
-    # Persistência entre reruns
-    if "workers_a" not in st.session_state:
-        st.session_state.workers_a = PHASE_A_WORKERS_START
-    if "workers_b" not in st.session_state:
-        st.session_state.workers_b = PHASE_B_WORKERS_START
-
-    # Fase A
-    df_a, stats_a = _rodar_fase(
-        gravadores,
-        timeout=PHASE_A_TIMEOUT,
-        workers=int(st.session_state.workers_a),
-        phase_name="Fase A (rápida)",
-    )
-
-    err_rate_a = (stats_a.errors / stats_a.total) if stats_a.total else 0.0
-    st.session_state.workers_a = _adapt_workers(
-        current=int(st.session_state.workers_a),
-        error_rate=err_rate_a,
-        wmin=PHASE_A_WORKERS_MIN,
-        wmax=PHASE_A_WORKERS_MAX,
-    )
-
-    # Offline para confirmar
-    offline_items: list[dict] = []
-    if not df_a.empty:
-        offline_rows = df_a[df_a["Status"] == "OFFLINE"]
-        offline_keys = set(zip(offline_rows["IP"].astype(str), offline_rows["Porta"].astype(int)))
-
-        for g in gravadores:
-            k = (str(g.get("ip", "")), int(g.get("porta", 0)))
-            if k in offline_keys:
-                offline_items.append(g)
-
-    # Fase B (apenas offline)
-    df_b, stats_b = _rodar_fase(
-        offline_items,
-        timeout=PHASE_B_TIMEOUT,
-        workers=int(st.session_state.workers_b),
-        phase_name="Fase B (confirmação)",
-    )
-
-    err_rate_b = (stats_b.errors / stats_b.total) if stats_b.total else 0.0
-    st.session_state.workers_b = _adapt_workers(
-        current=int(st.session_state.workers_b),
-        error_rate=err_rate_b,
-        wmin=PHASE_B_WORKERS_MIN,
-        wmax=PHASE_B_WORKERS_MAX,
-    )
-
-    # Merge: B sobrescreve OFFLINE da A
-    if df_a.empty:
-        df_final = df_b
-    elif df_b.empty:
-        df_final = df_a
-    else:
-        key_cols = ["IP", "Porta"]
-        a = df_a.set_index(key_cols, drop=False)
-        b = df_b.set_index(key_cols, drop=False)
-        a.update(b)
-        df_final = a.reset_index(drop=True)
-
-    # Limpa colunas internas + bolinha
-    if not df_final.empty:
-        for c in ("_dur_ms", "_error"):
-            if c in df_final.columns:
-                df_final = df_final.drop(columns=[c])
-
-        if "●" not in df_final.columns:
-            df_final.insert(0, "●", df_final["Status"].map({"ONLINE": "🟢", "OFFLINE": "🔴"}))
-
-    meta = {
-        "stats_a": stats_a.__dict__,
-        "stats_b": stats_b.__dict__,
-        "workers_next_a": int(st.session_state.workers_a),
-        "workers_next_b": int(st.session_state.workers_b),
-    }
-    return df_final, meta
+    # deixa consistente a ordenação inicial
+    if not df.empty and "Nome" in df.columns:
+        df = df.sort_values("Nome")
+    return df
 
 
 # ==========================
-# ESTADO / UTILITÁRIOS UI
+# ESTADO
 # ==========================
-def _ensure_state():
-    st.session_state.setdefault("df", None)
-    st.session_state.setdefault("meta", None)
-    st.session_state.setdefault("last_check_at", None)
-    st.session_state.setdefault("next_check_at", None)
-    st.session_state.setdefault("is_checking", False)
-
-
-def _seconds_left() -> int:
-    nxt = st.session_state.get("next_check_at")
-    if not nxt:
-        return 0
-    return max(0, int((nxt - datetime.now()).total_seconds()))
-
-
-def _format_mmss(seconds: int) -> str:
-    m, s = divmod(max(0, seconds), 60)
-    return f"{m:02d}:{s:02d}"
+if "modo" not in st.session_state:
+    st.session_state.modo = "manual"  # "manual" ou "auto"
+if "df" not in st.session_state:
+    st.session_state.df = None
+if "last_run" not in st.session_state:
+    st.session_state.last_run = None
 
 
 # ==========================
-# APP
+# UI - TOPO
 # ==========================
-st.title("📹 Monitor de Gravadores")
-_ensure_state()
+st.title("📹 Monitor Básico de Gravadores")
 
-if not GRAVADORES:
-    st.warning("Cole sua lista GRAVADORES no topo do arquivo app.py.")
-    st.stop()
+cA, cB, cC = st.columns([1, 1, 3])
 
-# Atualiza contador a cada 1s sem refazer testes (se disponível)
-try:
-    st.autorefresh(interval=1000, key="countdown_tick")
-except Exception:
-    pass
+with cA:
+    if st.button("🔁 Automático (2 min)", use_container_width=True):
+        st.session_state.modo = "auto"
 
-# Primeira vez: agenda agora
-if st.session_state.next_check_at is None:
-    st.session_state.next_check_at = datetime.now()
+with cB:
+    if st.button("🖱️ Manual", use_container_width=True):
+        st.session_state.modo = "manual"
 
-# Quando chega a hora (e não está verificando), executa verificação completa
-if (datetime.now() >= st.session_state.next_check_at) and (not st.session_state.is_checking):
-    st.session_state.is_checking = True
+with cC:
+    st.write(f"**Modo atual:** `{st.session_state.modo.upper()}`")
+    if st.session_state.last_run:
+        st.write(f"Última execução: **{st.session_state.last_run}**")
 
-    df, meta = verificar_todos_duas_fases(GRAVADORES)
 
+# ==========================
+# AUTO-REFRESH (somente no modo automático)
+# ==========================
+if st.session_state.modo == "auto":
+    st_autorefresh(interval=AUTO_INTERVAL_MS, key="auto_refresh_2min")
+
+
+# ==========================
+# EXECUÇÃO
+# ==========================
+executar_agora = False
+
+if st.session_state.modo == "manual":
+    executar_agora = st.button("▶️ Executar agora", type="primary")
+
+# No automático: executa a cada rerun do autorefresh
+if st.session_state.modo == "auto":
+    executar_agora = True
+
+if executar_agora:
+    if not GRAVADORES:
+        st.warning("Cole sua lista de gravadores na variável GRAVADORES.")
+        st.stop()
+
+    df = verificar_todos(GRAVADORES)
     st.session_state.df = df
-    st.session_state.meta = meta
-    st.session_state.last_check_at = datetime.now()
-    st.session_state.next_check_at = st.session_state.last_check_at + timedelta(minutes=AUTO_REFRESH_MIN)
+    st.session_state.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    st.session_state.is_checking = False
-    st.rerun()
 
-# Não renderiza dashboard enquanto ainda está “montando” a rodada
-if st.session_state.is_checking or st.session_state.df is None:
-    st.info("Executando verificação inicial... aguarde.")
+# ==========================
+# DASHBOARD + FILTRO + TABELA
+# ==========================
+if st.session_state.df is None:
+    st.info("Selecione o modo e execute a verificação para carregar o dashboard.")
     st.stop()
 
-df = st.session_state.df.copy()
+df_all = st.session_state.df.copy()
 
-# ==========================
-# DASHBOARD (após verificação completa)
-# ==========================
-total = len(df)
-online = int((df["Status"] == "ONLINE").sum())
+# ---- filtro de status (vale para dashboard e tabela)
+f_status = st.selectbox("Filtrar por Status", ["Todos", "ONLINE", "OFFLINE"], index=0)
+
+if f_status != "Todos":
+    df_view = df_all[df_all["Status"] == f_status].copy()
+else:
+    df_view = df_all.copy()
+
+# ---- dashboard respeitando filtro
+total = len(df_view)
+online = int((df_view["Status"] == "ONLINE").sum()) if total else 0
 offline = total - online
 
-cols = st.columns([1, 1, 1, 2])
-cols[0].metric("Total", total)
-cols[1].metric("Online", online)
-cols[2].metric("Offline", offline)
-cols[3].metric("Próxima atualização em", _format_mmss(_seconds_left()))
+d1, d2, d3 = st.columns(3)
+d1.metric("Total (filtrado)", total)
+d2.metric("Online (filtrado)", online)
+d3.metric("Offline (filtrado)", offline)
 
 st.divider()
 
-# ==========================
-# CONTROLES (filtros/ordem)
-# ==========================
-c1, c2, c3, c4 = st.columns([1.2, 1.2, 3, 1.2])
-
-f_status = c1.selectbox("Mostrar", ["Todos", "Somente Online", "Somente Offline"], index=0)
-ordem = c2.selectbox("Ordenar por", ["Nome", "Status", "Cidade", "Última verificação"], index=0)
-texto = c3.text_input("Filtro por texto (Nome, IP, Site, Cidade)", value="").strip().lower()
-show_meta = c4.checkbox("Métricas", value=False)
-
-# Aplica filtro status
-if f_status == "Somente Online":
-    df = df[df["Status"] == "ONLINE"]
-elif f_status == "Somente Offline":
-    df = df[df["Status"] == "OFFLINE"]
-
-# Aplica filtro texto
-if texto:
-    mask = (
-        df["Nome"].astype(str).str.lower().str.contains(texto, na=False)
-        | df["IP"].astype(str).str.lower().str.contains(texto, na=False)
-        | df["Site"].astype(str).str.lower().str.contains(texto, na=False)
-        | df["Cidade"].astype(str).str.lower().str.contains(texto, na=False)
-    )
-    df = df[mask]
-
-# Ordenação (Status: ONLINE primeiro)
-if ordem == "Status":
-    df["_ord"] = df["Status"].map({"ONLINE": 0, "OFFLINE": 1}).fillna(2).astype(int)
-    df = df.sort_values(["_ord", "Nome"], ascending=[True, True]).drop(columns=["_ord"])
-else:
-    df = df.sort_values(ordem, ascending=True)
-
-# ==========================
-# TABELA
-# ==========================
+# ---- tabela (inclui Status)
 st.dataframe(
-    df,
+    df_view[["Nome", "IP", "Porta", "Site", "Cidade", "Status"]],
     use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Ativo": st.column_config.CheckboxColumn("Ativo"),
-        "Latência (ms)": st.column_config.NumberColumn("Latência (ms)", format="%d"),
-    },
+    hide_index=True
 )
-
-# ==========================
-# MÉTRICAS (opcional)
-# ==========================
-if show_meta and st.session_state.meta:
-    with st.expander("Detalhes da rodada (Fase A / Fase B)"):
-        st.json(st.session_state.meta)
